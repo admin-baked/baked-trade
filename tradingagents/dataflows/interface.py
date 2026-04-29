@@ -23,6 +23,7 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .alpaca import get_alpaca_stock_data, get_alpaca_indicators
 
 # Configuration and routing logic
 from .config import get_config
@@ -61,6 +62,7 @@ TOOLS_CATEGORIES = {
 }
 
 VENDOR_LIST = [
+    "alpaca",
     "yfinance",
     "alpha_vantage",
 ]
@@ -69,11 +71,13 @@ VENDOR_LIST = [
 VENDOR_METHODS = {
     # core_stock_apis
     "get_stock_data": {
+        "alpaca": get_alpaca_stock_data,
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
     },
     # technical_indicators
     "get_indicators": {
+        "alpaca": get_alpaca_indicators,
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
     },

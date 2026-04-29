@@ -38,13 +38,24 @@ DEFAULT_CONFIG = {
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {
-        "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
-        "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
-        "fundamental_data": "yfinance",      # Options: alpha_vantage, yfinance
-        "news_data": "yfinance",             # Options: alpha_vantage, yfinance
+        # alpaca = live/recent bars (requires ALPACA_API_KEY + ALPACA_SECRET_KEY)
+        # Falls back to yfinance automatically if Alpaca keys are not set
+        "core_stock_apis": "alpaca,yfinance",       # Options: alpaca, alpha_vantage, yfinance
+        "technical_indicators": "alpaca,yfinance",  # Options: alpaca, alpha_vantage, yfinance
+        # Alpaca does not provide fundamental or news data — keep yfinance here
+        "fundamental_data": "yfinance",             # Options: alpha_vantage, yfinance
+        "news_data": "yfinance",                    # Options: alpha_vantage, yfinance
     },
     # Tool-level configuration (takes precedence over category-level)
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
+    },
+    # Execution configuration (Alpaca order execution)
+    "execution": {
+        "enabled": os.getenv("EXECUTION_ENABLED", "false").lower() == "true",
+        "paper": os.getenv("ALPACA_PAPER", "true").lower() == "true",
+        "max_position_pct": float(os.getenv("MAX_POSITION_PCT", "0.05")),
+        "max_daily_drawdown": float(os.getenv("MAX_DAILY_DRAWDOWN", "0.03")),
+        "max_open_positions": int(os.getenv("MAX_OPEN_POSITIONS", "10")),
     },
 }
