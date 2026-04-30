@@ -35,8 +35,31 @@ class AlpacaExecutor:
             return None
 
     def _current_price(self, ticker: str) -> float:
-        from tradingagents.dataflows.alpaca import get_alpaca_latest_price
-        return get_alpaca_latest_price(ticker)
+        """Use last bar close — more reliable than IEX quotes for free-tier accounts."""
+        from datetime import date, timedelta
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        import os, pandas as pd
+
+        data_client = StockHistoricalDataClient(
+            os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"]
+        )
+        end = date.today()
+        start = end - timedelta(days=5)
+        req = StockBarsRequest(
+            symbol_or_symbols=[ticker.upper()],
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+        )
+        bars = data_client.get_stock_bars(req)
+        df = bars.df
+        if isinstance(df.index, pd.MultiIndex):
+            df = df.xs(ticker.upper(), level="symbol")
+        if df.empty:
+            return 0.0
+        return float(df["close"].iloc[-1])
 
     def _calculate_shares(self, ticker: str, account) -> int:
         portfolio_value = float(account.portfolio_value)
