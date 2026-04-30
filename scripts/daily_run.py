@@ -79,10 +79,13 @@ def _report_to_bakedbot(payload: dict) -> None:
         logger.warning("BakedBot report failed: %s", e)
 
 
-def _fetch_guidance() -> str:
-    """Fetch operator strategy guidance from BakedBot before running analysis."""
+_DEFAULT_WATCHLIST = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
+
+
+def _fetch_config() -> tuple[str, list[str]]:
+    """Fetch operator guidance + watchlist from BakedBot. Returns (guidance, watchlist)."""
     if not TRADING_INGEST_SECRET:
-        return ""
+        return "", WATCHLIST
     try:
         resp = requests.get(
             f"{BAKEDBOT_API_URL}/api/trading/guidance",
@@ -90,9 +93,13 @@ def _fetch_guidance() -> str:
             timeout=5,
         )
         if resp.ok:
-            return resp.json().get("guidance", "")
+            data = resp.json()
+            guidance = data.get("guidance", "")
+            watchlist = data.get("watchlist") or WATCHLIST
+            return guidance, [t.strip().upper() for t in watchlist if t.strip()]
     except Exception as e:
-        logger.warning("Could not fetch guidance: %s", e)
+        logger.warning("Could not fetch config from BakedBot: %s", e)
+    return "", WATCHLIST
     return ""
 
 
@@ -115,10 +122,10 @@ def main() -> None:
     trade_date = date.today().isoformat()
     run_id = f"{trade_date}-{os.getpid()}"
 
-    logger.info("=== BakedTrade analysis run | %s | %s ===", trade_date, LLM_PROVIDER.upper())
-    logger.info("Watchlist: %s", WATCHLIST)
+    guidance, active_watchlist = _fetch_config()
 
-    guidance = _fetch_guidance()
+    logger.info("=== BakedTrade analysis run | %s | %s ===", trade_date, LLM_PROVIDER.upper())
+    logger.info("Watchlist: %s", active_watchlist)
     if guidance:
         logger.info("Operator guidance loaded (%d chars)", len(guidance))
 
@@ -136,7 +143,7 @@ def main() -> None:
     ta = TradingAgentsGraph(debug=False, config=config)
     signal_records: list[dict] = []
 
-    for ticker in WATCHLIST:
+    for ticker in active_watchlist:
         logger.info("Analyzing %s ...", ticker)
         record = {"ticker": ticker, "signal": "Hold", "rawSignal": "", "action": "hold", "shares": 0, "orderId": "", "reason": "", "reports": {}}
         try:
