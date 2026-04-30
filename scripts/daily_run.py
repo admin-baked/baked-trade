@@ -79,12 +79,48 @@ def _report_to_bakedbot(payload: dict) -> None:
         logger.warning("BakedBot report failed: %s", e)
 
 
+def _fetch_guidance() -> str:
+    """Fetch operator strategy guidance from BakedBot before running analysis."""
+    if not TRADING_INGEST_SECRET:
+        return ""
+    try:
+        resp = requests.get(
+            f"{BAKEDBOT_API_URL}/api/trading/guidance",
+            headers={"Authorization": f"Bearer {TRADING_INGEST_SECRET}"},
+            timeout=5,
+        )
+        if resp.ok:
+            return resp.json().get("guidance", "")
+    except Exception as e:
+        logger.warning("Could not fetch guidance: %s", e)
+    return ""
+
+
+def _extract_reports(state: dict) -> dict:
+    """Pull agent-generated reports out of the final graph state."""
+    debate = state.get("investment_debate_state", {})
+    return {
+        "marketReport": state.get("market_report", ""),
+        "sentimentReport": state.get("sentiment_report", ""),
+        "newsReport": state.get("news_report", ""),
+        "fundamentalsReport": state.get("fundamentals_report", ""),
+        "bullThesis": debate.get("bull_history", ""),
+        "bearThesis": debate.get("bear_history", ""),
+        "debateSummary": debate.get("history", ""),
+        "finalDecision": state.get("final_trade_decision", ""),
+    }
+
+
 def main() -> None:
     trade_date = date.today().isoformat()
     run_id = f"{trade_date}-{os.getpid()}"
 
     logger.info("=== BakedTrade analysis run | %s | %s ===", trade_date, LLM_PROVIDER.upper())
     logger.info("Watchlist: %s", WATCHLIST)
+
+    guidance = _fetch_guidance()
+    if guidance:
+        logger.info("Operator guidance loaded (%d chars)", len(guidance))
 
     config = DEFAULT_CONFIG.copy()
     config["llm_provider"] = LLM_PROVIDER
@@ -102,10 +138,11 @@ def main() -> None:
 
     for ticker in WATCHLIST:
         logger.info("Analyzing %s ...", ticker)
-        record = {"ticker": ticker, "signal": "Hold", "rawSignal": "", "action": "hold", "shares": 0, "orderId": "", "reason": ""}
+        record = {"ticker": ticker, "signal": "Hold", "rawSignal": "", "action": "hold", "shares": 0, "orderId": "", "reason": "", "reports": {}}
         try:
-            _, raw_signal = ta.propagate(ticker, trade_date)
+            state, raw_signal = ta.propagate(ticker, trade_date, user_guidance=guidance)
             signal = _normalize_signal(raw_signal)
+            record["reports"] = _extract_reports(state)
             record["rawSignal"] = str(raw_signal)
             record["signal"] = signal
             logger.info("%s -> %s", ticker, signal)
