@@ -40,6 +40,8 @@ ALPACA_PAPER = os.getenv("ALPACA_PAPER", "true").lower() != "false"
 EXECUTION_ENABLED = os.getenv("EXECUTION_ENABLED", "false").lower() == "true"
 WATCHLIST = [t.strip() for t in os.getenv("WATCHLIST", "SPY,QQQ,AAPL,MSFT,NVDA").split(",") if t.strip()]
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+DEEP_THINK_LLM = os.getenv("DEEP_THINK_LLM", "gpt-5.4")
+QUICK_THINK_LLM = os.getenv("QUICK_THINK_LLM", "gpt-5.4-mini")
 
 # --- Imports after env is loaded --------------------------------------------
 
@@ -48,6 +50,16 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.execution.alpaca_executor import AlpacaExecutor
 from tradingagents.execution.risk_controls import RiskControls
 from tradingagents.execution.notifier import SlackNotifier
+
+
+def _normalize_signal(signal: str) -> str:
+    """Map analyst-language signals to canonical Buy/Sell/Hold."""
+    s = (signal or "").strip().lower()
+    if s in ("buy", "overweight", "strong buy", "outperform", "accumulate"):
+        return "Buy"
+    if s in ("sell", "underweight", "strong sell", "underperform", "reduce"):
+        return "Sell"
+    return "Hold"
 
 
 def main() -> None:
@@ -64,6 +76,8 @@ def main() -> None:
 
     config = DEFAULT_CONFIG.copy()
     config["llm_provider"] = LLM_PROVIDER
+    config["deep_think_llm"] = DEEP_THINK_LLM
+    config["quick_think_llm"] = QUICK_THINK_LLM
     config["data_vendors"] = {
         "core_stock_apis": "alpaca,yfinance",
         "technical_indicators": "alpaca,yfinance",
@@ -92,7 +106,8 @@ def main() -> None:
         logger.info("Analyzing %s ...", ticker)
         try:
             _, signal = ta.propagate(ticker, trade_date)
-            logger.info("%s → %s", ticker, signal)
+            signal = _normalize_signal(signal)
+            logger.info("%s -> %s", ticker, signal)
 
             if not EXECUTION_ENABLED:
                 continue
