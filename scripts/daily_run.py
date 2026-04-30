@@ -21,6 +21,8 @@ import os
 import sys
 from datetime import date
 
+import requests
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,6 +42,8 @@ ALPACA_PAPER = os.getenv("ALPACA_PAPER", "true").lower() != "false"
 EXECUTION_ENABLED = os.getenv("EXECUTION_ENABLED", "false").lower() == "true"
 WATCHLIST = [t.strip() for t in os.getenv("WATCHLIST", "SPY,QQQ,AAPL,MSFT,NVDA").split(",") if t.strip()]
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+BAKEDBOT_API_URL = os.getenv("BAKEDBOT_API_URL", "https://bakedbot.ai")
+TRADING_INGEST_SECRET = os.getenv("TRADING_INGEST_SECRET", "")
 DEEP_THINK_LLM = os.getenv("DEEP_THINK_LLM", "gpt-5.4")
 QUICK_THINK_LLM = os.getenv("QUICK_THINK_LLM", "gpt-5.4-mini")
 
@@ -50,6 +54,23 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.execution.alpaca_executor import AlpacaExecutor
 from tradingagents.execution.risk_controls import RiskControls
 from tradingagents.execution.notifier import SlackNotifier
+
+
+def _report_to_bakedbot(payload: dict) -> None:
+    if not TRADING_INGEST_SECRET:
+        logger.debug("TRADING_INGEST_SECRET not set — skipping BakedBot report")
+        return
+    try:
+        resp = requests.post(
+            f"{BAKEDBOT_API_URL}/api/trading/ingest",
+            json=payload,
+            headers={"Authorization": f"Bearer {TRADING_INGEST_SECRET}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        logger.info("Reported to BakedBot: %s", resp.json())
+    except Exception as e:
+        logger.warning("BakedBot report failed: %s", e)
 
 
 def _normalize_signal(signal: str) -> str:
@@ -101,45 +122,93 @@ def main() -> None:
             logger.exception("Pre-flight failed")
             sys.exit(1)
 
+    run_id = f"{trade_date}-{os.getpid()}"
+    signal_records: list[dict] = []
+
     # Per-ticker analysis + execution
     for ticker in WATCHLIST:
         logger.info("Analyzing %s ...", ticker)
+        record = {"ticker": ticker, "signal": "Hold", "rawSignal": "", "action": "hold", "shares": 0, "orderId": "", "reason": ""}
         try:
-            _, signal = ta.propagate(ticker, trade_date)
-            signal = _normalize_signal(signal)
+            _, raw_signal = ta.propagate(ticker, trade_date)
+            signal = _normalize_signal(raw_signal)
+            record["rawSignal"] = str(raw_signal)
+            record["signal"] = signal
             logger.info("%s -> %s", ticker, signal)
 
-            if not EXECUTION_ENABLED:
-                continue
+            if EXECUTION_ENABLED:
+                positions = executor.get_all_positions()
+                account = executor.get_account()
 
-            positions = executor.get_all_positions()
-            account = executor.get_account()
-
-            approved, rejection = risk.validate_order(ticker, signal, account, positions)
-            if not approved:
-                logger.warning("Order rejected for %s: %s", ticker, rejection)
-                notifier.notify_skipped(ticker, signal, rejection)
-                continue
-
-            result = executor.execute_signal(ticker, signal)
-
-            if result.action in ("buy", "sell"):
-                notifier.notify_order(ticker, result.action, result.shares, result.order_id, ALPACA_PAPER)
-            elif result.action == "skip":
-                notifier.notify_skipped(ticker, signal, result.reason)
+                approved, rejection = risk.validate_order(ticker, signal, account, positions)
+                if not approved:
+                    logger.warning("Order rejected for %s: %s", ticker, rejection)
+                    notifier.notify_skipped(ticker, signal, rejection)
+                    record["action"] = "skip"
+                    record["reason"] = rejection
+                else:
+                    result = executor.execute_signal(ticker, signal)
+                    record["action"] = result.action
+                    record["shares"] = result.shares
+                    record["orderId"] = result.order_id
+                    record["reason"] = result.reason
+                    if result.action in ("buy", "sell"):
+                        notifier.notify_order(ticker, result.action, result.shares, result.order_id, ALPACA_PAPER)
+                    elif result.action == "skip":
+                        notifier.notify_skipped(ticker, signal, result.reason)
 
         except Exception as e:
             logger.exception("Error processing %s", ticker)
             notifier.notify_error(str(e), ticker)
+            record["reason"] = str(e)
 
-    # End-of-run summary
-    if EXECUTION_ENABLED:
+        signal_records.append(record)
+
+    # Snapshot account + positions for reporting
+    account_snapshot = {"equity": 0, "buyingPower": 0, "cash": 0, "lastEquity": 0, "dayPnl": 0, "dayPnlPct": 0}
+    position_records: list[dict] = []
+    try:
+        acct_client = AlpacaExecutor(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=ALPACA_PAPER)
+        acct = acct_client.get_account()
+        equity = float(acct.equity)
+        last_equity = float(acct.last_equity)
+        day_pnl = equity - last_equity
+        account_snapshot = {
+            "equity": equity,
+            "buyingPower": float(acct.buying_power),
+            "cash": float(acct.cash),
+            "lastEquity": last_equity,
+            "dayPnl": day_pnl,
+            "dayPnlPct": (day_pnl / last_equity * 100) if last_equity > 0 else 0,
+        }
+        for p in acct_client.get_all_positions():
+            position_records.append({
+                "symbol": p.symbol,
+                "qty": float(p.qty),
+                "currentPrice": float(p.current_price or 0),
+                "unrealizedPl": float(p.unrealized_pl or 0),
+                "unrealizedPlPct": float(p.unrealized_plpc or 0) * 100,
+            })
+    except Exception as e:
+        logger.warning("Could not snapshot account: %s", e)
+
+    # End-of-run summary notification
+    if EXECUTION_ENABLED and executor:
         try:
-            account = executor.get_account()
-            positions = executor.get_all_positions()
-            notifier.notify_daily_summary(account, positions)
+            notifier.notify_daily_summary(executor.get_account(), executor.get_all_positions())
         except Exception as e:
             logger.warning("Could not send daily summary: %s", e)
+
+    # Report to BakedBot dashboard
+    _report_to_bakedbot({
+        "date": trade_date,
+        "runId": run_id,
+        "completedAt": date.today().isoformat() + "T" + __import__("datetime").datetime.utcnow().strftime("%H:%M:%SZ"),
+        "paper": ALPACA_PAPER,
+        "account": account_snapshot,
+        "signals": signal_records,
+        "positions": position_records,
+    })
 
     logger.info("=== Run complete ===")
 
